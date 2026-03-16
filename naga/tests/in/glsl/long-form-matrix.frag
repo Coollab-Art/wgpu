@@ -22,4 +22,9 @@ void main() {
     mat3 c = mat3(1, 2, 3, vec3(1), vec3(1));
     mat3 d = mat3(vec2(2), 1, vec3(1), vec3(1));
     mat4 e = mat4(vec2(2), vec4(1), vec2(2), vec4(1), vec4(1));
+
+    // Single vector argument: components are flattened and re-chunked into
+    // column vectors in column-major order.
+    // See https://github.com/gfx-rs/wgpu/issues/4897
+    mat2 from_vec4 = mat2(vec4(1.0, 2.0, 3.0, 4.0));
 }
