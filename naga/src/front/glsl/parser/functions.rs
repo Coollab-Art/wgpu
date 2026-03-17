@@ -30,7 +30,11 @@ impl ParsingContext<'_> {
                 TokenValue::In => ParameterQualifier::In,
                 TokenValue::Out => ParameterQualifier::Out,
                 TokenValue::InOut => ParameterQualifier::InOut,
-                TokenValue::Const => ParameterQualifier::Const,
+                TokenValue::Const => {
+                    // `const in` is valid GLSL (spec 4.60 §6.1), equivalent to `const` alone.
+                    self.bump_if(frontend, TokenValue::In);
+                    ParameterQualifier::Const
+                }
                 _ => unreachable!(),
             }
         } else {
