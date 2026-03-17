@@ -466,9 +466,22 @@ impl Frontend {
                 rows,
                 scalar: element_scalar,
             } => {
-                let mut flattened = Vec::with_capacity(columns as usize * rows as usize);
+                let num_components = columns as usize * rows as usize;
+                let mut flattened = Vec::with_capacity(num_components);
 
                 for (mut arg, meta) in args.iter().copied() {
+                    // GLSL 4.60 §5.4.2: "It is a compile-time error to provide
+                    // extra arguments beyond this last used argument."
+                    if flattened.len() >= num_components {
+                        self.errors.push(Error {
+                            kind: ErrorKind::SemanticError(
+                                "too many arguments in matrix constructor".into(),
+                            ),
+                            meta,
+                        });
+                        break;
+                    }
+
                     ctx.forced_conversion(&mut arg, meta, element_scalar)?;
 
                     match *ctx.resolve_type(arg, meta)? {
@@ -486,6 +499,10 @@ impl Frontend {
                         _ => flattened.push(arg),
                     }
                 }
+
+                // GLSL 4.60 §5.4.2: the last argument may provide more components
+                // than needed to fill the matrix - only extra *arguments* are forbidden.
+                flattened.truncate(num_components);
 
                 let ty = ctx.module.types.insert(
                     Type {
