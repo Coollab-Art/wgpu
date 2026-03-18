@@ -157,6 +157,26 @@ impl<'source> ParsingContext<'source> {
         }
     }
 
+    /// Consumes tokens until the closing `}` that matches the current scope.
+    /// Used to skip unreachable code after a terminator (return/discard/break/continue)
+    /// without lowering it to IR.
+    pub fn skip_to_closing_brace(&mut self, frontend: &mut Frontend) -> Result<()> {
+        let mut depth: u32 = 0;
+        loop {
+            let token = self.bump(frontend)?;
+            match token.value {
+                TokenValue::LeftBrace => depth += 1,
+                TokenValue::RightBrace => {
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn expect_peek(&mut self, frontend: &mut Frontend) -> Result<&Token> {
         let meta = self.last_meta;
         self.peek(frontend).ok_or(Error {

@@ -606,15 +606,20 @@ impl ParsingContext<'_> {
                 break;
             }
 
+            // If a terminator (return, discard, break, continue) was already seen,
+            // skip remaining tokens in this block without lowering them to IR.
+            // Parsing dead code would create orphaned expressions in the Arena
+            // that the validator would reject as UnvisitedExpression.
+            if terminator.is_some() {
+                self.skip_to_closing_brace(frontend)?;
+                break;
+            }
+
             let stmt = self.parse_statement(frontend, ctx, terminator, is_inside_loop)?;
 
             if let Some(stmt_meta) = stmt {
                 meta.subsume(stmt_meta);
             }
-        }
-
-        if let Some(idx) = *terminator {
-            ctx.body.cull(idx..)
         }
 
         ctx.symbol_table.pop_scope();
