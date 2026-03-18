@@ -1151,6 +1151,17 @@ impl Frontend {
     ) {
         ensure_block_returns(&mut ctx.body);
 
+        // ensure_block_returns() inserts bare `Return { value: None }` for missing
+        // returns. For non-void functions, replace those with `Return { value: Some(zero) }`
+        // so the validator doesn't reject them. The GLSL spec says missing returns in
+        // non-void functions are undefined behavior, not an error (spec 6.1).
+        if let Some(ref result) = result {
+            let zero = ctx
+                .expressions
+                .append(Expression::ZeroValue(result.ty), Span::default());
+            patch_bare_returns(&mut ctx.body, zero);
+        }
+
         let void = result.is_none();
 
         // Check if the passed arguments require any special variations
@@ -1742,4 +1753,42 @@ fn builtin_required_variations<'a>(args: impl Iterator<Item = &'a TypeInner>) ->
     }
 
     variations
+}
+
+/// Recursively replaces `Return { value: None }` with `Return { value: Some(zero) }`
+/// in the given block. These bare returns are inserted by `ensure_block_returns()` for
+/// non-void functions that don't return on all code paths.
+fn patch_bare_returns(block: &mut Block, zero: Handle<Expression>) {
+    for statement in block.iter_mut() {
+        match *statement {
+            Statement::Return { ref mut value } if value.is_none() => {
+                *value = Some(zero);
+            }
+            Statement::If {
+                ref mut accept,
+                ref mut reject,
+                ..
+            } => {
+                patch_bare_returns(accept, zero);
+                patch_bare_returns(reject, zero);
+            }
+            Statement::Switch { ref mut cases, .. } => {
+                for case in cases.iter_mut() {
+                    patch_bare_returns(&mut case.body, zero);
+                }
+            }
+            Statement::Block(ref mut b) => {
+                patch_bare_returns(b, zero);
+            }
+            Statement::Loop {
+                ref mut body,
+                ref mut continuing,
+                ..
+            } => {
+                patch_bare_returns(body, zero);
+                patch_bare_returns(continuing, zero);
+            }
+            _ => {}
+        }
+    }
 }
