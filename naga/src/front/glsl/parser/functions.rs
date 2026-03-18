@@ -713,6 +713,11 @@ impl ParsingContext<'_> {
 
                         break;
                     }
+                    TokenValue::RightParen => {
+                        // Unnamed parameter at end of args list (e.g. `void foo(vec3)`)
+                        ctx.add_function_arg(None, ty, qualifier)?;
+                        break;
+                    }
                     _ => break,
                 }
             }

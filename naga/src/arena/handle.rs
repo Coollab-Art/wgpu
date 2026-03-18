@@ -101,7 +101,7 @@ impl<T> Handle<T> {
     }
 
     /// Convert a `usize` index into a `Handle<T>`.
-    pub(super) fn from_usize(index: usize) -> Self {
+    pub(crate) fn from_usize(index: usize) -> Self {
         let handle_index = u32::try_from(index)
             .ok()
             .and_then(Index::new)
