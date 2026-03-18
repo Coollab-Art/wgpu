@@ -1628,6 +1628,53 @@ impl Context<'_> {
                     self.arg_type_walker(member.name, binding, member_pointer, member.ty, f)?
                 }
             }
+            // Matrix varyings: decompose into column vectors, each consuming one location.
+            // GLSL 4.60 spec, Section 4.4.1: "If the declared variable is a matrix type,
+            // it gets the location of column 0 from the layout qualifier."
+            TypeInner::Matrix {
+                columns,
+                rows,
+                scalar,
+            } => {
+                let mut location = match binding {
+                    crate::Binding::Location { location, .. } => location,
+                    crate::Binding::BuiltIn(_) => return Ok(()),
+                };
+
+                let column_ty = self.module.types.insert(
+                    Type {
+                        name: None,
+                        inner: TypeInner::Vector { size: rows, scalar },
+                    },
+                    Span::default(),
+                );
+
+                let interpolation = Some(match scalar.kind {
+                    ScalarKind::Float => crate::Interpolation::Perspective,
+                    _ => crate::Interpolation::Flat,
+                });
+
+                for index in 0..columns as u32 {
+                    let member_pointer = self.add_expression(
+                        Expression::AccessIndex {
+                            base: pointer,
+                            index,
+                        },
+                        Span::default(),
+                    )?;
+
+                    let binding = crate::Binding::Location {
+                        location,
+                        interpolation,
+                        sampling: None,
+                        blend_src: None,
+                        per_primitive: false,
+                    };
+                    location += 1;
+
+                    self.arg_type_walker(name.clone(), binding, member_pointer, column_ty, f)?
+                }
+            }
             _ => f(self, name, pointer, ty, binding),
         }
 

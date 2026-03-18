@@ -34,6 +34,7 @@ var<private> vert: VertexData;
 var<private> frag: FragmentData;
 var<private> in_array_2: array<vec4<f32>, 2>;
 var<private> out_array: array<vec4<f32>, 2>;
+var<private> in_matrix_2: mat2x2<f32>;
 var<private> array_2d: array<array<f32, 2>, 2>;
 var<private> array_toomanyd: array<array<array<array<array<array<array<f32, 2>, 2>, 2>, 2>, 2>, 2>, 2>;
 
@@ -44,27 +45,32 @@ fn main_1() {
     var a_1: f32;
     var b: f32;
     var light_scattering_params: LightScatteringParams;
+    var from_input_matrix: vec2<f32>;
 
-    let _e17 = in_array_2[1];
-    from_input_array = _e17;
-    let _e21 = array_2d[0][0];
-    a_1 = _e21;
-    let _e30 = array_toomanyd[0][0][0][0][0][0][0];
-    b = _e30;
+    let _e18 = in_array_2[1];
+    from_input_array = _e18;
+    let _e22 = array_2d[0][0];
+    a_1 = _e22;
+    let _e31 = array_toomanyd[0][0][0][0][0][0][0];
+    b = _e31;
     out_array[0i] = vec4(2f);
+    let _e38 = in_matrix_2[1];
+    from_input_matrix = _e38;
     return;
 }
 
 @fragment 
-fn main(@location(0) position: vec2<f32>, @location(1) a: vec2<f32>, @location(2) in_array: vec4<f32>, @location(3) in_array_1: vec4<f32>) -> FragmentOutput {
+fn main(@location(0) position: vec2<f32>, @location(1) a: vec2<f32>, @location(2) in_array: vec4<f32>, @location(3) in_array_1: vec4<f32>, @location(4) in_matrix: vec2<f32>, @location(5) in_matrix_1: vec2<f32>) -> FragmentOutput {
     vert.position = position;
     vert.a = a;
     in_array_2[0] = in_array;
     in_array_2[1] = in_array_1;
+    in_matrix_2[0] = in_matrix;
+    in_matrix_2[1] = in_matrix_1;
     main_1();
-    let _e12 = frag.position;
-    let _e14 = frag.a;
-    let _e17 = out_array[0];
-    let _e19 = out_array[1];
-    return FragmentOutput(_e12, _e14, _e17, _e19);
+    let _e17 = frag.position;
+    let _e19 = frag.a;
+    let _e22 = out_array[0];
+    let _e24 = out_array[1];
+    return FragmentOutput(_e17, _e19, _e22, _e24);
 }
