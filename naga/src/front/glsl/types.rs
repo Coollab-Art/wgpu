@@ -196,6 +196,82 @@ pub fn parse_type(type_name: &str) -> Option<Type> {
     }
 }
 
+/// Parses combined image/sampler type names like `sampler2D`, `isampler3D`,
+/// `sampler2DArrayShadow`, etc. Returns the decomposed image type and whether
+/// it's a comparison (shadow) sampler.
+///
+/// Combined sampler types can't be represented as a single naga type (the IR
+/// separates images and samplers), so this is used by function parameter parsing
+/// to split them into two parameters.
+pub fn parse_combined_sampler_type(name: &str) -> Option<(Type, bool)> {
+    // Try shadow variants first (e.g. "sampler2DShadow", "sampler2DArrayShadow")
+    if let Some(rest) = name.strip_suffix("Shadow") {
+        let (mut image_type, _) = parse_combined_sampler_non_shadow(rest)?;
+        // Shadow samplers use Depth image class, not Sampled
+        if let TypeInner::Image {
+            ref mut class,
+            dim: _,
+            arrayed: _,
+        } = image_type.inner
+        {
+            let multi = matches!(class, ImageClass::Sampled { multi: true, .. });
+            *class = ImageClass::Depth { multi };
+        }
+        return Some((image_type, true));
+    }
+
+    let (image_type, _) = parse_combined_sampler_non_shadow(name)?;
+    Some((image_type, false))
+}
+
+/// Parses the non-shadow part of a combined sampler type name.
+/// Returns the image type and the scalar kind prefix (for i/u variants).
+fn parse_combined_sampler_non_shadow(name: &str) -> Option<(Type, ScalarKind)> {
+    let sampler_kind = |prefix| {
+        Some(match prefix {
+            "" => ScalarKind::Float,
+            "i" => ScalarKind::Sint,
+            "u" => ScalarKind::Uint,
+            _ => return None,
+        })
+    };
+
+    let mut iter = name.split("sampler");
+    let prefix = iter.next()?;
+    let suffix = iter.next()?;
+    if iter.next().is_some() {
+        return None; // More than one "sampler" in the name
+    }
+    let kind = sampler_kind(prefix)?;
+
+    let sampled = |multi| ImageClass::Sampled { kind, multi };
+
+    let (dim, arrayed, class) = match suffix {
+        "1D" => (ImageDimension::D1, false, sampled(false)),
+        "1DArray" => (ImageDimension::D1, true, sampled(false)),
+        "2D" => (ImageDimension::D2, false, sampled(false)),
+        "2DArray" => (ImageDimension::D2, true, sampled(false)),
+        "2DMS" => (ImageDimension::D2, false, sampled(true)),
+        "2DMSArray" => (ImageDimension::D2, true, sampled(true)),
+        "3D" => (ImageDimension::D3, false, sampled(false)),
+        "Cube" => (ImageDimension::Cube, false, sampled(false)),
+        "CubeArray" => (ImageDimension::Cube, true, sampled(false)),
+        _ => return None,
+    };
+
+    Some((
+        Type {
+            name: None,
+            inner: TypeInner::Image {
+                dim,
+                arrayed,
+                class,
+            },
+        },
+        kind,
+    ))
+}
+
 pub const fn scalar_components(ty: &TypeInner) -> Option<Scalar> {
     match *ty {
         TypeInner::Scalar(scalar)
