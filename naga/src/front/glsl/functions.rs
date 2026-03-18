@@ -1168,10 +1168,11 @@ impl Frontend {
                 }
             }
 
-            return self.errors.push(Error {
-                kind: ErrorKind::SemanticError("Prototype already defined".into()),
-                meta,
-            });
+            // Identical prototype already exists — silently skip.
+            // This is GLSL-spec-correct (redeclarations are allowed) and
+            // needed for the two-phase parse where definitions are registered
+            // as prototypes in phase 1.
+            return;
         }
 
         let handle = module.functions.append(function, meta);

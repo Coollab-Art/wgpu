@@ -4,7 +4,7 @@ use core::iter::Peekable;
 use pp_rs::token::{PreprocessorError, Token as PPToken, TokenValue as PPTokenValue};
 
 use super::{
-    ast::{FunctionKind, Profile, TypeQualifiers},
+    ast::{Profile, TypeQualifiers},
     context::{Context, ExprPos},
     error::ExpectedToken,
     error::{Error, ErrorKind},
@@ -21,19 +21,31 @@ mod expressions;
 mod functions;
 mod types;
 
+/// Controls which phase of the two-phase parse we are in.
+/// Phase 1 collects all function signatures (registering definitions as prototypes).
+/// Phase 2 re-lexes and only parses function bodies (skipping everything else).
+/// This enables forward declarations: all signatures are known before any body is parsed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParsePhase {
+    CollectSignatures,
+    ParseBodies,
+}
+
 pub struct ParsingContext<'source> {
     lexer: Peekable<Lexer<'source>>,
     /// Used to store tokens already consumed by the parser but that need to be backtracked
     backtracked_token: Option<Token>,
     last_meta: Span,
+    pub(super) phase: ParsePhase,
 }
 
 impl<'source> ParsingContext<'source> {
-    pub fn new(lexer: Lexer<'source>) -> Self {
+    pub fn new(lexer: Lexer<'source>, phase: ParsePhase) -> Self {
         ParsingContext {
             lexer: lexer.peekable(),
             backtracked_token: None,
             last_meta: Span::default(),
+            phase,
         }
     }
 
@@ -165,39 +177,55 @@ impl<'source> ParsingContext<'source> {
         })
     }
 
-    pub fn parse(&mut self, frontend: &mut Frontend) -> Result<Module> {
-        let mut module = Module::default();
-        let mut global_expression_kind_tracker = crate::proc::ExpressionKindTracker::new();
+    /// Skip tokens until matching `}` (assumes opening `{` was already consumed).
+    pub(super) fn skip_function_body(&mut self, frontend: &mut Frontend) -> Result<()> {
+        let mut depth = 1u32;
+        while depth > 0 {
+            let token = self.bump(frontend)?;
+            match token.value {
+                TokenValue::LeftBrace => depth += 1,
+                TokenValue::RightBrace => depth -= 1,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 
+    /// Skip tokens to `;` at brace depth 0 (handles nested `{}`).
+    pub(super) fn skip_to_semicolon(&mut self, frontend: &mut Frontend) -> Result<()> {
+        let mut depth = 0u32;
+        loop {
+            let token = self.bump(frontend)?;
+            match token.value {
+                TokenValue::LeftBrace => depth += 1,
+                TokenValue::RightBrace => depth = depth.saturating_sub(1),
+                TokenValue::Semicolon if depth == 0 => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+
+    /// Run the main parse loop over all external declarations.
+    /// Returns the global Context (needed for entry point resolution).
+    pub fn parse<'a>(
+        &mut self,
+        frontend: &mut Frontend,
+        module: &'a mut Module,
+        global_expression_kind_tracker: &'a mut crate::proc::ExpressionKindTracker,
+    ) -> Result<Context<'a>> {
         // Body and expression arena for global initialization
         let mut ctx = Context::new(
             frontend,
-            &mut module,
+            module,
             false,
-            &mut global_expression_kind_tracker,
+            global_expression_kind_tracker,
         )?;
 
         while self.peek(frontend).is_some() {
             self.parse_external_declaration(frontend, &mut ctx)?;
         }
 
-        // Add an `EntryPoint` to `parser.module` for `main`, if a
-        // suitable overload exists. Error out if we can't find one.
-        if let Some(declaration) = frontend.lookup_function.get("main") {
-            for decl in declaration.overloads.iter() {
-                if let FunctionKind::Call(handle) = decl.kind {
-                    if decl.defined && decl.parameters.is_empty() {
-                        frontend.add_entry_point(handle, ctx)?;
-                        return Ok(module);
-                    }
-                }
-            }
-        }
-
-        Err(Error {
-            kind: ErrorKind::SemanticError("Missing entry point".into()),
-            meta: Span::default(),
-        })
+        Ok(ctx)
     }
 
     fn parse_uint_constant(

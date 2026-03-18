@@ -1,6 +1,6 @@
 use alloc::{string::String, vec, vec::Vec};
 
-use super::{DeclarationContext, ParsingContext, Result};
+use super::{DeclarationContext, ParsePhase, ParsingContext, Result};
 use crate::{
     front::glsl::{
         ast::{
@@ -343,25 +343,29 @@ impl ParsingContext<'_> {
                             return match token.value {
                                 TokenValue::Semicolon => {
                                     // This branch handles function prototypes
-                                    frontend.add_prototype(context, name, result, meta);
+                                    if self.phase != ParsePhase::ParseBodies {
+                                        frontend.add_prototype(context, name, result, meta);
+                                    }
 
                                     Ok(Some(meta))
                                 }
                                 TokenValue::LeftBrace if external => {
-                                    // This branch handles function definitions
-                                    // as you can see by the guard this branch
-                                    // only happens if external is also true
+                                    if self.phase == ParsePhase::CollectSignatures {
+                                        // Phase 1: register signature as prototype, skip body
+                                        frontend.add_prototype(context, name, result, meta);
+                                        self.skip_function_body(frontend)?;
+                                    } else {
+                                        // Phase 2: parse the body (all signatures are known)
+                                        self.parse_compound_statement(
+                                            token.meta,
+                                            frontend,
+                                            &mut context,
+                                            &mut None,
+                                            false,
+                                        )?;
 
-                                    // parse the body
-                                    self.parse_compound_statement(
-                                        token.meta,
-                                        frontend,
-                                        &mut context,
-                                        &mut None,
-                                        false,
-                                    )?;
-
-                                    frontend.add_function(context, name, result, meta);
+                                        frontend.add_function(context, name, result, meta);
+                                    }
 
                                     Ok(Some(meta))
                                 }
@@ -397,6 +401,12 @@ impl ParsingContext<'_> {
                 // If program execution has reached here then this will be a
                 // init_declarator_list
                 // token_fallthrough will have a token that was already bumped
+                if self.phase == ParsePhase::ParseBodies && external {
+                    // Phase 2: skip top-level variable declarations (already registered in phase 1)
+                    self.backtrack(token_fallthrough)?;
+                    self.skip_to_semicolon(frontend)?;
+                    return Ok(Some(meta));
+                }
                 if let Some(ty) = ty {
                     let mut ctx = DeclarationContext {
                         qualifiers,
@@ -415,6 +425,10 @@ impl ParsingContext<'_> {
                 }
 
                 Ok(Some(meta))
+            } else if self.phase == ParsePhase::ParseBodies {
+                // Phase 2: skip block declarations, layout qualifiers, etc.
+                self.skip_to_semicolon(frontend)?;
+                return Ok(Some(qualifiers.span));
             } else {
                 // This branch handles struct definitions and modifiers like
                 // ```glsl
@@ -483,6 +497,14 @@ impl ParsingContext<'_> {
                     }),
                 }
             }
+        } else if self.phase == ParsePhase::ParseBodies {
+            // Phase 2: skip precision declarations
+            if matches!(self.peek(frontend).map(|t| &t.value), Some(&TokenValue::Precision)) {
+                self.bump(frontend)?;
+                self.skip_to_semicolon(frontend)?;
+                return Ok(Some(Span::default()));
+            }
+            return Ok(None);
         } else {
             match self.peek(frontend).map(|t| &t.value) {
                 Some(&TokenValue::Precision) => {
