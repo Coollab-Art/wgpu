@@ -72,6 +72,10 @@ pub(crate) struct Context<'a> {
     pub symbol_table: crate::front::SymbolTable<String, VariableReference>,
     pub samplers: FastHashMap<Handle<Expression>, Handle<Expression>>,
 
+    /// Tracks combined image/sampler parameters that were split into (Image, Sampler)
+    /// pairs. Each entry is (image_param_index, sampler_param_index) in `self.parameters`.
+    pub combined_sampler_pairs: Vec<(usize, usize)>,
+
     pub const_typifier: Typifier,
     pub typifier: Typifier,
     layouter: Layouter,
@@ -103,6 +107,7 @@ impl<'a> Context<'a> {
 
             symbol_table: crate::front::SymbolTable::default(),
             samplers: FastHashMap::default(),
+            combined_sampler_pairs: Vec::new(),
 
             const_typifier: Typifier::new(),
             typifier: Typifier::new(),
@@ -394,6 +399,77 @@ impl<'a> Context<'a> {
                     constant: None,
                     entry_arg: None,
                 }
+            };
+
+            self.symbol_table.add(name, var);
+        }
+
+        Ok(())
+    }
+
+    /// Adds a combined image/sampler function argument, splitting it into two
+    /// IR parameters: an Image and a Sampler. Registers the sampler pairing
+    /// in `self.samplers` so that texture sampling calls inside the function
+    /// body can find the associated sampler.
+    pub fn add_combined_sampler_arg(
+        &mut self,
+        name_meta: Option<(String, Span)>,
+        image_ty: Handle<Type>,
+        sampler_ty: Handle<Type>,
+        qualifier: ParameterQualifier,
+    ) -> Result<()> {
+        let image_index = self.arguments.len();
+        let sampler_index = image_index + 1;
+
+        // Image argument
+        let image_arg = FunctionArgument {
+            name: name_meta.as_ref().map(|&(ref name, _)| name.clone()),
+            ty: image_ty,
+            binding: None,
+        };
+        self.parameters.push(image_ty);
+        self.parameters_info.push(ParameterInfo {
+            qualifier,
+            depth: false,
+        });
+        self.arguments.push(image_arg);
+
+        // Sampler argument
+        let sampler_name = name_meta
+            .as_ref()
+            .map(|&(ref name, _)| alloc::format!("{name}_sampler"));
+        let sampler_arg = FunctionArgument {
+            name: sampler_name,
+            ty: sampler_ty,
+            binding: None,
+        };
+        self.parameters.push(sampler_ty);
+        self.parameters_info.push(ParameterInfo {
+            qualifier,
+            depth: false,
+        });
+        self.arguments.push(sampler_arg);
+
+        // Record the combined pair for call-site expansion
+        self.combined_sampler_pairs
+            .push((image_index, sampler_index));
+
+        // Bind the image parameter name in the symbol table and register
+        // the sampler pairing so texture() calls resolve correctly.
+        if let Some((name, meta)) = name_meta {
+            let image_expr =
+                self.add_expression(Expression::FunctionArgument(image_index as u32), meta)?;
+            let sampler_expr =
+                self.add_expression(Expression::FunctionArgument(sampler_index as u32), meta)?;
+
+            self.samplers.insert(image_expr, sampler_expr);
+
+            let var = VariableReference {
+                expr: image_expr,
+                load: false,
+                mutable: false,
+                constant: None,
+                entry_arg: None,
             };
 
             self.symbol_table.add(name, var);

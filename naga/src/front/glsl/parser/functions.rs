@@ -1,6 +1,7 @@
 use alloc::{vec, vec::Vec};
 
 use crate::front::glsl::context::ExprPos;
+use crate::front::glsl::types::parse_combined_sampler_type;
 use crate::front::glsl::Span;
 use crate::Literal;
 use crate::{
@@ -621,6 +622,15 @@ impl ParsingContext<'_> {
         Ok(meta)
     }
 
+    /// Checks if the next token is an identifier matching a combined
+    /// image/sampler type name (e.g. `sampler2D`, `isamplerCube`).
+    fn peek_combined_sampler_type(&mut self, frontend: &mut Frontend) -> bool {
+        self.peek(frontend).is_some_and(|t| match &t.value {
+            TokenValue::Identifier(name) => parse_combined_sampler_type(name).is_some(),
+            _ => false,
+        })
+    }
+
     pub fn parse_function_args(
         &mut self,
         frontend: &mut Frontend,
@@ -631,8 +641,53 @@ impl ParsingContext<'_> {
         }
 
         loop {
-            if self.peek_type_name(frontend) || self.peek_parameter_qualifier(frontend) {
+            if self.peek_type_name(frontend)
+                || self.peek_parameter_qualifier(frontend)
+                || self.peek_combined_sampler_type(frontend)
+            {
                 let qualifier = self.parse_parameter_qualifier(frontend);
+
+                // Check for combined image/sampler types (e.g. sampler2D, isamplerCube).
+                // These are split into two IR parameters: Image + Sampler.
+                if self.peek_combined_sampler_type(frontend) {
+                    let (type_name, meta) = self.expect_ident(frontend)?;
+                    let (image_type, comparison) =
+                        parse_combined_sampler_type(&type_name).unwrap();
+
+                    let image_ty = ctx.module.types.insert(image_type, meta);
+                    let sampler_ty = ctx.module.types.insert(
+                        crate::Type {
+                            name: None,
+                            inner: crate::TypeInner::Sampler { comparison },
+                        },
+                        meta,
+                    );
+
+                    match self.expect_peek(frontend)?.value {
+                        TokenValue::Comma => {
+                            self.bump(frontend)?;
+                            ctx.add_combined_sampler_arg(None, image_ty, sampler_ty, qualifier)?;
+                            continue;
+                        }
+                        TokenValue::Identifier(_) => {
+                            let name = self.expect_ident(frontend)?;
+                            ctx.add_combined_sampler_arg(
+                                Some(name),
+                                image_ty,
+                                sampler_ty,
+                                qualifier,
+                            )?;
+
+                            if self.bump_if(frontend, TokenValue::Comma).is_some() {
+                                continue;
+                            }
+
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+
                 let mut ty = self.parse_type_non_void(frontend, ctx)?.0;
 
                 match self.expect_peek(frontend)?.value {
