@@ -51,6 +51,7 @@ impl Module {
             defined: false,
             internal: true,
             void: false,
+            combined_sampler_pairs: Vec::new(),
         }
     }
 }

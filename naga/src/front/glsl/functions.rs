@@ -541,11 +541,36 @@ impl Frontend {
         // Borrow again but without mutability, at this point a declaration is guaranteed
         let declaration = self.lookup_function.get(&name).unwrap();
 
+        // Precompute an expanded argument list for combined sampler parameters.
+        // Any argument whose image expression has a sampler pairing in ctx.samplers
+        // gets split into (image, sampler). This allows matching overloads that accept
+        // split combined-sampler parameters.
+        let expanded_args: Vec<(Handle<Expression>, Span)> = args
+            .iter()
+            .flat_map(|&(expr, span)| {
+                if let Some(&sampler) = ctx.samplers.get(&expr) {
+                    vec![(expr, span), (sampler, span)]
+                } else {
+                    vec![(expr, span)]
+                }
+            })
+            .collect();
+        let needs_expansion = expanded_args.len() != args.len();
+
+        // Grow typifier for expanded sampler expressions too
+        if needs_expansion {
+            for &(expr, span) in expanded_args.iter() {
+                ctx.typifier_grow(expr, span)?;
+            }
+        }
+
         // Possibly contains the overload to be used in the call
         let mut maybe_overload = None;
+        // Whether the selected overload uses expanded (combined-sampler) args
+        let mut use_expanded = false;
         // The conversions needed for the best analyzed overload, this is initialized all to
         // `NONE` to make sure that conversions always pass the first time without ambiguity
-        let mut old_conversions = vec![Conversion::None; args.len()];
+        let mut old_conversions = vec![Conversion::None; expanded_args.len()];
         // Tracks whether the comparison between overloads lead to an ambiguity
         let mut ambiguous = false;
 
@@ -553,10 +578,19 @@ impl Frontend {
         // overload which has suitable implicit conversions
         'outer: for (overload_idx, overload) in declaration.overloads.iter().enumerate() {
             // If the overload and the function call don't have the same number of arguments
-            // continue to the next overload
-            if args.len() != overload.parameters.len() {
+            // continue to the next overload. Try expanded args if the overload has combined
+            // sampler pairs.
+            let matching_args = if args.len() == overload.parameters.len() {
+                &args
+            } else if needs_expansion
+                && !overload.combined_sampler_pairs.is_empty()
+                && expanded_args.len() == overload.parameters.len()
+            {
+                &expanded_args
+            } else {
                 continue;
-            }
+            };
+            let is_expanded = matching_args.len() != args.len();
 
             log::trace!("Testing overload {overload_idx}");
 
@@ -569,12 +603,12 @@ impl Frontend {
             let mut superior = None;
             // Store the conversions for the current overload so that later they can replace the
             // conversions used for querying the best overload
-            let mut new_conversions = vec![Conversion::None; args.len()];
+            let mut new_conversions = vec![Conversion::None; matching_args.len()];
 
             // Loop through the overload parameters and check if the current overload is better
             // compared to the previous best overload.
             for (i, overload_parameter) in overload.parameters.iter().enumerate() {
-                let call_argument = &args[i];
+                let call_argument = &matching_args[i];
                 let parameter_info = &overload.parameters_info[i];
 
                 // If the image is used in the overload as a depth texture convert it
@@ -731,6 +765,7 @@ impl Frontend {
             // further querying is needed.
             if exact {
                 maybe_overload = Some(overload);
+                use_expanded = is_expanded;
                 ambiguous = false;
                 break;
             }
@@ -739,6 +774,7 @@ impl Frontend {
                 // New overload is better keep it
                 Some(true) => {
                     maybe_overload = Some(overload);
+                    use_expanded = is_expanded;
                     // Replace the conversions
                     old_conversions = new_conversions;
                 }
@@ -753,6 +789,7 @@ impl Frontend {
                     // ambiguity the parsing won't end immediately and allow for further
                     // collection of errors.
                     maybe_overload = Some(overload);
+                    use_expanded = is_expanded;
                 }
             }
         }
@@ -773,22 +810,40 @@ impl Frontend {
 
         let parameters_info = overload.parameters_info.clone();
         let parameters = overload.parameters.clone();
+        let combined_sampler_pairs = overload.combined_sampler_pairs.clone();
         let is_void = overload.void;
         let kind = overload.kind;
 
-        let mut arguments = Vec::with_capacity(args.len());
+        // Select the final argument list: expanded if the overload has combined sampler pairs
+        let final_args = if use_expanded {
+            &expanded_args
+        } else {
+            &args
+        };
+
+        let mut arguments = Vec::with_capacity(final_args.len());
         let mut proxy_writes = Vec::new();
 
-        // Iterate through the function call arguments applying transformations as needed
-        for (((parameter_info, call_argument), expr), parameter) in parameters_info
-            .iter()
-            .zip(&args)
-            .zip(raw_args)
-            .zip(&parameters)
+        // Iterate through the function call arguments applying transformations as needed.
+        // When using expanded args, raw_args doesn't have entries for the injected sampler
+        // arguments, so we track the raw_args index separately.
+        let mut raw_arg_idx = 0;
+        for (i, (parameter_info, parameter)) in
+            parameters_info.iter().zip(&parameters).enumerate()
         {
-            if parameter_info.qualifier.is_lhs() {
+            let call_argument = &final_args[i];
+
+            // Check if this parameter is the sampler half of a combined pair.
+            // If so, it was injected by expansion and has no corresponding raw_arg.
+            let is_injected_sampler = use_expanded
+                && combined_sampler_pairs
+                    .iter()
+                    .any(|&(_, sampler_idx)| sampler_idx == i);
+
+            if parameter_info.qualifier.is_lhs() && !is_injected_sampler {
                 // Reprocess argument in LHS position
-                let (handle, meta) = ctx.lower_expect_inner(stmt, self, *expr, ExprPos::Lhs)?;
+                let expr = raw_args[raw_arg_idx];
+                let (handle, meta) = ctx.lower_expect_inner(stmt, self, expr, ExprPos::Lhs)?;
 
                 self.process_lhs_argument(
                     ctx,
@@ -801,6 +856,7 @@ impl Frontend {
                     &mut arguments,
                 )?;
 
+                raw_arg_idx += 1;
                 continue;
             }
 
@@ -813,7 +869,11 @@ impl Frontend {
                 ctx.implicit_conversion(&mut handle, meta, scalar)?;
             }
 
-            arguments.push(handle)
+            arguments.push(handle);
+
+            if !is_injected_sampler {
+                raw_arg_idx += 1;
+            }
         }
 
         match kind {
@@ -1056,6 +1116,7 @@ impl Frontend {
             arguments,
             parameters,
             parameters_info,
+            combined_sampler_pairs,
             body,
             module,
             ..
@@ -1095,6 +1156,7 @@ impl Frontend {
 
             decl.defined = true;
             decl.parameters_info = parameters_info;
+            decl.combined_sampler_pairs = combined_sampler_pairs;
             match decl.kind {
                 FunctionKind::Call(handle) => *module.functions.get_mut(handle) = function,
                 FunctionKind::Macro(_) => {
@@ -1113,6 +1175,7 @@ impl Frontend {
             defined: true,
             internal: false,
             void,
+            combined_sampler_pairs,
         });
     }
 
@@ -1143,6 +1206,7 @@ impl Frontend {
             arguments,
             parameters,
             parameters_info,
+            combined_sampler_pairs,
             module,
             ..
         } = ctx;
@@ -1182,6 +1246,7 @@ impl Frontend {
             defined: false,
             internal: false,
             void,
+            combined_sampler_pairs,
         });
     }
 

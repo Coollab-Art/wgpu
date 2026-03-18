@@ -62,6 +62,11 @@ pub struct Overload {
     pub internal: bool,
     /// Whether or not this function returns void (nothing)
     pub void: bool,
+    /// Parameter index pairs (image_idx, sampler_idx) from combined sampler
+    /// types (e.g. `sampler2D`) that were split into separate Image + Sampler
+    /// parameters. Used at call sites to expand single combined-sampler
+    /// arguments into two.
+    pub combined_sampler_pairs: Vec<(usize, usize)>,
 }
 
 bitflags::bitflags! {
