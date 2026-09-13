@@ -248,9 +248,23 @@ impl ParsingContext<'_> {
                 decl_initializer = init;
                 late_initializer = None;
             } else if ctx.external {
-                decl_initializer =
-                    init.and_then(|expr| ctx.ctx.lift_up_const_expression(expr).ok());
-                late_initializer = None;
+                if let Some(expr) = init {
+                    match ctx.ctx.lift_up_const_expression(expr) {
+                        Ok(const_expr) => {
+                            decl_initializer = Some(const_expr);
+                            late_initializer = None;
+                        }
+                        Err(_) => {
+                            // Non-const initializer (references uniform/global):
+                            // emit a Store into the entry point body instead
+                            decl_initializer = None;
+                            late_initializer = Some(expr);
+                        }
+                    }
+                } else {
+                    decl_initializer = None;
+                    late_initializer = None;
+                }
             } else if let Some(init) = init {
                 if ctx.is_inside_loop || !ctx.ctx.local_expression_kind_tracker.is_const(init) {
                     decl_initializer = None;
