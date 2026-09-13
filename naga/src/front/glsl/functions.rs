@@ -347,6 +347,46 @@ impl Frontend {
                     }
                 }
             }
+            TypeInner::Vector { size, .. } => {
+                // A single vector argument is neither the scalar-diagonal case
+                // nor the matrix-resize case, so it falls under the general rule
+                // (GLSL 4.60 §5.4.2, GLSL ES 3.00 §5.4.2):
+                // "Matrix components will be constructed and consumed in column
+                // major order." The vector's components are flattened into scalars
+                // and re-chunked into column vectors.
+                // E.g. `mat2(vec4(a, b, c, d))` -> col0 = vec2(a, b), col1 = vec2(c, d).
+                let mut flattened = Vec::with_capacity(size as usize);
+                for i in 0..(size as u32) {
+                    flattened.push(ctx.add_expression(
+                        Expression::AccessIndex {
+                            base: value,
+                            index: i,
+                        },
+                        meta,
+                    )?);
+                }
+
+                let vector_ty = ctx.module.types.insert(
+                    Type {
+                        name: None,
+                        inner: TypeInner::Vector {
+                            size: rows,
+                            scalar: element_scalar,
+                        },
+                    },
+                    meta,
+                );
+
+                for chunk in flattened.chunks(rows as usize) {
+                    components.push(ctx.add_expression(
+                        Expression::Compose {
+                            ty: vector_ty,
+                            components: Vec::from(chunk),
+                        },
+                        meta,
+                    )?);
+                }
+            }
             _ => {
                 components = iter::repeat_n(value, columns as usize).collect();
             }
@@ -426,9 +466,22 @@ impl Frontend {
                 rows,
                 scalar: element_scalar,
             } => {
-                let mut flattened = Vec::with_capacity(columns as usize * rows as usize);
+                let num_components = columns as usize * rows as usize;
+                let mut flattened = Vec::with_capacity(num_components);
 
                 for (mut arg, meta) in args.iter().copied() {
+                    // GLSL 4.60 §5.4.2: "It is a compile-time error to provide
+                    // extra arguments beyond this last used argument."
+                    if flattened.len() >= num_components {
+                        self.errors.push(Error {
+                            kind: ErrorKind::SemanticError(
+                                "too many arguments in matrix constructor".into(),
+                            ),
+                            meta,
+                        });
+                        break;
+                    }
+
                     ctx.forced_conversion(&mut arg, meta, element_scalar)?;
 
                     match *ctx.resolve_type(arg, meta)? {
@@ -446,6 +499,10 @@ impl Frontend {
                         _ => flattened.push(arg),
                     }
                 }
+
+                // GLSL 4.60 §5.4.2: the last argument may provide more components
+                // than needed to fill the matrix - only extra *arguments* are forbidden.
+                flattened.truncate(num_components);
 
                 let ty = ctx.module.types.insert(
                     Type {
