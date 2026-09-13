@@ -1,13 +1,13 @@
-struct BST {
-    data: i32,
-}
-
 struct a_buf {
     a: array<f32>,
 }
 
 struct TestStruct {
     array: array<vec4<u32>, 2>,
+}
+
+struct BST {
+    data: i32,
 }
 
 struct FragmentOutput {
