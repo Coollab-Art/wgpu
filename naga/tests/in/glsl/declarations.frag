@@ -13,6 +13,8 @@ layout(location = 0) out FragmentData {
 layout(location = 2) in  vec4  in_array[2];
 layout(location = 2) out vec4 out_array[2];
 
+layout(location = 4) in mat2 in_matrix;
+
 struct TestStruct {
     float a;
     float b;
@@ -37,4 +39,5 @@ void main() {
     const float b = array_toomanyd[0][0][0][0][0][0][0];
     const LightScatteringParams light_scattering_params;
     out_array[0] = vec4(2.0);
+    const vec2 from_input_matrix = in_matrix[1];
 }
